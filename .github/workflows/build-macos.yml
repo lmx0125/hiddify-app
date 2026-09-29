@@ -1,0 +1,76 @@
+# 手动触发的 macOS 构建（不依赖苹果签名证书，产物为未签名版本）
+# 使用方式：GitHub 仓库页面 -> Actions -> 左侧选择 "Build macOS" -> Run workflow
+# 产物在本次运行的页面底部 Artifacts 处下载：Hiddify-MacOS.dmg / Hiddify-MacOS-Installer.pkg
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IS_GITHUB_ACTIONS: 1
+  FLUTTER_VERSION: '3.38.5'
+  # dev: 从 hiddify-core 的 draft 预发布下载预编译内核，无需自己编译 Go 代码
+  CHANNEL: dev
+
+jobs:
+  build-macos:
+    name: macOS (dmg + pkg)
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2.21.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install packaging dependencies
+        run: make macos-install-deps
+
+      - name: Add pub-cache bin to PATH
+        run: echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
+
+      - name: Prepare for macos
+        run: make macos-prepare
+
+      - name: Build macos
+        env:
+          SENTRY_DSN: ''
+        run: make macos-release
+
+      - name: Keep .app if packaging failed
+        if: failure()
+        run: |
+          if [ -d build/macos/Build/Products/Release/Hiddify.app ]; then
+            mkdir -p out
+            ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/Hiddify.app out/Hiddify-MacOS-app.zip
+          fi
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          mkdir -p out
+          for f in $(find dist -type f -name '*.dmg'); do cp "$f" out/Hiddify-MacOS.dmg; done
+          for f in $(find dist -type f -name '*.pkg'); do cp "$f" out/Hiddify-MacOS-Installer.pkg; done
+          ls -lh out || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Hiddify-macOS
+          path: out/*
+          if-no-files-found: warn
+          retention-days: 30
